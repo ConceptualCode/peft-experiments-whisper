@@ -1,0 +1,14 @@
+# Ignore model directories
+openai-whisper-tiny-4bit-quantized/
+whisper_pruned_10_percent/
+whisper_pruned_20_percent/
+whisper_pruned_40_percent/
+whisper_pruned_60_percent/
+whisper_tiny_lora_rank_4/
+whisper_tiny_lora_rank_8/
+whisper_tiny_lora_rank_16/
+whisper-tiny-afrispeech-finetune/
+whisper-tiny-finetune/
+whisper-tiny-finetuned/
+__pycache__/
+myenv/
