@@ -3,11 +3,15 @@ import evaluate
 import argparse
 from datasets import load_dataset
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, WhisperForConditionalGeneration, WhisperProcessor, WhisperTokenizer, WhisperFeatureExtractor
-from peft import LoraConfig, get_peft_model
-from lora_quantization import apply_lora, quantize_and_finetune_with_lora
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from lora_quantization import apply_lora, lora_finetune
 from dataclasses import dataclass
 from typing import Any, Dict, List, Union
 import os
+from peft import LoraConfig, PeftModel, LoraModel, LoraConfig, get_peft_model
+# from peft import prepare_model_for_int8_training
+from transformers import Seq2SeqTrainer, TrainerCallback, TrainingArguments, TrainerState, TrainerControl
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 
 def parse_args():
@@ -78,7 +82,6 @@ def main():
     val_dataset = val_dataset.filter(filter_inputs, input_columns=["input_length"])
     val_dataset = val_dataset.filter(filter_labels, input_columns=["labels_length"])
 
-
     @dataclass
     class DataCollatorSpeechSeq2SeqWithPadding:
         processor: Any
@@ -101,25 +104,65 @@ def main():
 
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
-    ranks = [4, 8, 16, 32, 64]
+    # This callback helps to save only the adapter weights and remove the base model weights.
+    class SavePeftModelCallback(TrainerCallback):
+        def on_save(
+            self,
+            args: TrainingArguments,
+            state: TrainerState,
+            control: TrainerControl,
+            **kwargs,
+        ):
+            checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
+
+            peft_model_path = os.path.join(checkpoint_folder, "adapter_model")
+            kwargs["model"].save_pretrained(peft_model_path)
+
+            pytorch_model_path = os.path.join(checkpoint_folder, "pytorch_model.bin")
+            if os.path.exists(pytorch_model_path):
+                os.remove(pytorch_model_path)
+            return control
+
+    ranks = [32]
+
+    # model = prepare_model_for_kbit_training(model) # , output_embedding_layer_name="proj_out")
+    def make_inputs_require_grad(module, input, output):
+        output.requires_grad_(True)
+
+    # model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
+
+    # config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
+
+
     
     for r in ranks:
         print(f"Running quantization and LoRA fine-tuning for rank {r}")
+        ranks = [32]
 
+        model = prepare_model_for_kbit_training(model) # , output_embedding_layer_name="proj_out")
+        model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
+
+        config = LoraConfig(r=r, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
+        model = get_peft_model(model, config)
+        model.print_trainable_parameters()
         
         output_dir = f"./whisper-{args.model_size}-lora_rank-{r}-afrispeech-finetune"
-
     
         training_args = Seq2SeqTrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=4,
             per_device_eval_batch_size=4,
-            learning_rate=2e-5,
+            warmup_steps=50,
+            learning_rate=1e-3,
             evaluation_strategy="steps",
-            logging_steps=1,
-            max_steps=1,
+            logging_steps=50,
+            max_steps=1000,
             predict_with_generate=True,
-            fp16=False
+            generation_max_length=128,
+            gradient_accumulation_steps=1,
+            fp16=True,
+            label_names=["labels"],
+            max_grad_norm=1.0
         )
 
         loraTrainer = Seq2SeqTrainer(
@@ -129,24 +172,27 @@ def main():
             eval_dataset=val_dataset,
             data_collator=data_collator,
             tokenizer=processor.feature_extractor,
+            callbacks=[SavePeftModelCallback]   
         )
         
-        save_dir = f"./whisper_{args.model_size}_lora_rank_{r}"
+        model.config.use_cache = False
         
-        quantized_lora_model = quantize_and_finetune_with_lora(
-            model_name_or_path=model_name,
-            args=args,
-            r_value=r,
-            save_dir=save_dir
-        )
+        # save_dir = f"./whisper_{args.model_size}_lora_rank_{r}"
+        
+        # quantized_lora_model = lora_finetune(
+        #     model_name_or_path=model_name,
+        #     args=args,
+        #     r_value=r,
+        #     save_dir=save_dir
+        # )
 
-        loraTrainer.model = quantized_lora_model
+        # loraTrainer.model = quantized_lora_model
         loraTrainer.train()
 
 
-        model.save_pretrained(f"{output_dir}/model")
-        processor.save_pretrained(f"{output_dir}/processor")
-        tokenizer.save_pretrained(f"{output_dir}/tokenizer")
+        # model.save_pretrained(f"{output_dir}/model")
+        # processor.save_pretrained(f"{output_dir}/processor")
+        # tokenizer.save_pretrained(f"{output_dir}/tokenizer")
 
 if __name__ == "__main__":
     main()
