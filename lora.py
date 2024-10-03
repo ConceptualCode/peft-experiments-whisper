@@ -19,7 +19,6 @@ def parse_args():
     parser.add_argument("--model_size", type=str, default="small", help="Model size to use (small, medium, large)")
     return parser.parse_args()
 
-
 def main():
     args = parse_args()
     
@@ -27,7 +26,7 @@ def main():
     print(f"Using device: {device}")
 
     model_name = f"openai/whisper-{args.model_size}"
-    model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device) 
+    # model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device) 
     processor = WhisperProcessor.from_pretrained(model_name, language="English", task="transcribe")
     tokenizer = WhisperTokenizer.from_pretrained(model_name, language="English", task="transcribe")
     feature_extractor = WhisperFeatureExtractor.from_pretrained(model_name)
@@ -36,8 +35,8 @@ def main():
     train_dataset = load_dataset("intronhealth/afrispeech-200", 'igbo', split="train")
     val_dataset = load_dataset("intronhealth/afrispeech-200", 'igbo', split="test")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # model.to(device)
 
     MAX_DURATION_IN_SECONDS = 30.0
     max_input_length = MAX_DURATION_IN_SECONDS * 16000
@@ -46,7 +45,7 @@ def main():
         """Filter inputs with zero input length or longer than 30s"""
         return 0 < input_length < max_input_length
 
-    max_label_length = model.config.max_length
+    max_label_length = 448 # model.config.max_length
 
     def filter_labels(labels_length):
         """Filter label sequences longer than max length (448)"""
@@ -125,19 +124,13 @@ def main():
 
     ranks = [4, 8, 16, 32, 64]
 
-    # model = prepare_model_for_kbit_training(model) # , output_embedding_layer_name="proj_out")
     def make_inputs_require_grad(module, input, output):
         output.requires_grad_(True)
-
-    # model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
-
-    # config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none")
-
-
     
     for r in ranks:
         print(f"Running quantization and LoRA fine-tuning for rank {r}")
 
+        model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device)
         model = prepare_model_for_kbit_training(model) # , output_embedding_layer_name="proj_out")
         model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
 
@@ -154,8 +147,8 @@ def main():
             warmup_steps=50,
             learning_rate=1e-3,
             evaluation_strategy="steps",
-            logging_steps=50,
-            max_steps=1000,
+            logging_steps=10,
+            max_steps=50,
             predict_with_generate=True,
             generation_max_length=128,
             gradient_accumulation_steps=1,
