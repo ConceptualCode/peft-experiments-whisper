@@ -137,7 +137,7 @@ def main():
     
     for r in ranks:
         print(f"Running quantization and LoRA fine-tuning for rank {r}")
-        ranks = [32]
+        ranks = [4, 8, 16, 32, 64]
 
         model = prepare_model_for_kbit_training(model) # , output_embedding_layer_name="proj_out")
         model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
